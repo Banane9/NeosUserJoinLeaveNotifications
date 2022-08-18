@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Threading.Tasks;
 using System.Collections;
 using FrooxEngine.UIX;
+using static CloudX.Shared.CloudXInterface;
 
 namespace UserJoinLeaveNotifications
 {
@@ -20,19 +21,19 @@ namespace UserJoinLeaveNotifications
         private static readonly ModConfigurationKey<bool> FocusWorldFromNotifications = new ModConfigurationKey<bool>("FocusWorldFromNotifications", "Makes clicking a User join/leave notification focus the world it relates to.", () => true);
 
         [AutoRegisterConfigKey]
-        private static readonly ModConfigurationKey<color> JoinFocusedWorldColor = new ModConfigurationKey<color>("JoinFocusedWorldColor", "Color of the notification for a User joining the focused world.", () => BlendColor(color.Blue));
+        private static readonly ModConfigurationKey<color> JoinFocusedWorldColor = new ModConfigurationKey<color>("JoinFocusedWorldColor", "Color of the notification for a User joining the focused session.", () => BlendColor(color.Blue));
 
         [AutoRegisterConfigKey]
-        private static readonly ModConfigurationKey<color> JoinUnfocusedWorldColor = new ModConfigurationKey<color>("JoinUnfocusedWorldColor", "Color of the notification for a User joining an unfocused world.", () => BlendColor(BlendColor(color.Blue)));
+        private static readonly ModConfigurationKey<color> JoinUnfocusedWorldColor = new ModConfigurationKey<color>("JoinUnfocusedWorldColor", "Color of the notification for a User joining an unfocused session.", () => BlendColor(BlendColor(color.Blue)));
 
         [AutoRegisterConfigKey]
-        private static readonly ModConfigurationKey<color> LeaveFocusedWorldColor = new ModConfigurationKey<color>("LeaveFocusedWorldColor", "Color of the notification for a User leaving the focused world.", () => BlendColor(color.Red));
+        private static readonly ModConfigurationKey<color> LeaveFocusedWorldColor = new ModConfigurationKey<color>("LeaveFocusedWorldColor", "Color of the notification for a User leaving the focused session.", () => BlendColor(color.Red));
 
         [AutoRegisterConfigKey]
-        private static readonly ModConfigurationKey<color> LeaveUnfocusedWorldColor = new ModConfigurationKey<color>("LeaveUnfocusedWorldColor", "Color of the notification for a User leaving an unfocused world.", () => BlendColor(BlendColor(color.Red)));
+        private static readonly ModConfigurationKey<color> LeaveUnfocusedWorldColor = new ModConfigurationKey<color>("LeaveUnfocusedWorldColor", "Color of the notification for a User leaving an unfocused session.", () => BlendColor(BlendColor(color.Red)));
 
         [AutoRegisterConfigKey]
-        private static readonly ModConfigurationKey<bool> ShowUnfocusedWorldEvents = new ModConfigurationKey<bool>("ShowUnfocusedWorldEvents", "Color of the notification for a User leaving an unfocused world.", () => true);
+        private static readonly ModConfigurationKey<bool> ShowUnfocusedWorldEvents = new ModConfigurationKey<bool>("ShowUnfocusedWorldEvents", "Show notifications for Users joining/leaving unfocused sessions.", () => true);
 
         public override string Author => "Banane9";
         public override string Link => "https://github.com/Banane9/NeosUserJoinLeaveNotifications";
@@ -42,7 +43,7 @@ namespace UserJoinLeaveNotifications
         public static void Setup()
         {
             // Hook into the world focused event
-            Engine.Current.WorldManager.WorldAdded += OnWorldAdded;
+            Engine.Current.WorldManager.WorldAdded += world => world.WorldRunning += OnWorldAdded;
         }
 
         public override void OnEngineInit()
@@ -84,17 +85,18 @@ namespace UserJoinLeaveNotifications
             return Traverse.Create(world).Field<UserBag>("_users").Value;
         }
 
-        private static string GetUserChangeMessage(User user, bool joining, World world, bool focusedWorld)
+        private static string GetUserChangeMessage(User user, bool joining, World world)
         {
-            return $"{user.UserName} {(joining ? "joined" : "left")}{(Config.GetValue(ShowUnfocusedWorldEvents) ? $" {(focusedWorld ? "this Session" : world.Name)}" : "")}";
+            return $"{user.UserName} {(joining ? "joined" : "left")} {world.Name}";
         }
 
+        // Patch the add notification method to do this
         // Async method to fetch thumbnail from user id
         private static async Task<Uri> GetUserThumbnail(string userId)
         {
             // Handle fetching profile, AddNotification only gets profile data for friends
             var cloudUserProfile = (await Engine.Current.Cloud.GetUser(userId))?.Entity?.Profile;
-            return CloudX.Shared.CloudXInterface.TryFromString(cloudUserProfile?.IconUrl) ?? NeosAssets.Graphics.Thumbnails.AnonymousHeadset;
+            return TryFromString(cloudUserProfile?.IconUrl) ?? NeosAssets.Graphics.Thumbnails.AnonymousHeadset;
         }
 
         private static void OnUserJoined(SyncBagBase<RefID, User> bag, RefID key, User user, bool isNew)
@@ -111,10 +113,11 @@ namespace UserJoinLeaveNotifications
 
                 AddNotification(bag.World,
                     user.UserID,
-                    GetUserChangeMessage(user, true, bag.World, focusedWorld),
-                    thumbnail,
+                    GetUserChangeMessage(user, true, bag.World),
+                    TryFromString(bag.World.GetSessionInfo().Thumbnail),
                     Config.GetValue(focusedWorld ? JoinFocusedWorldColor : JoinUnfocusedWorldColor),
-                    $"User Joined{(focusedWorld ? "" : " Unfocused")}");
+                    "User Joined",
+                    thumbnail);
             });
         }
 
@@ -130,10 +133,11 @@ namespace UserJoinLeaveNotifications
 
             AddNotification(bag.World,
                 user.UserID,
-                GetUserChangeMessage(user, false, bag.World, focusedWorld),
-                thumbnail,
+                GetUserChangeMessage(user, false, bag.World),
+                TryFromString(bag.World.GetSessionInfo().Thumbnail),
                 Config.GetValue(focusedWorld ? LeaveFocusedWorldColor : LeaveUnfocusedWorldColor),
-                $"User Left{(focusedWorld ? "" : " Unfocused")}");
+                "User Left",
+                thumbnail);
         }
 
         private static void OnWorldAdded(World world)
