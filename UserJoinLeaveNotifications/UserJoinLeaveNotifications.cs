@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 using System.Collections;
 using FrooxEngine.UIX;
 using static CloudX.Shared.CloudXInterface;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace UserJoinLeaveNotifications
 {
@@ -15,19 +17,45 @@ namespace UserJoinLeaveNotifications
     {
         public static ModConfiguration Config;
 
-        private static readonly MethodInfo addNotification = AccessTools.Method(typeof(NotificationPanel), "AddNotification", new Type[] { typeof(string), typeof(string), typeof(Uri), typeof(color), typeof(string), typeof(Uri), typeof(IAssetProvider<AudioClip>) });
+        private static readonly MethodInfo addNotificationMethod = AccessTools.Method(typeof(NotificationPanel), "AddNotification", new Type[] { typeof(string), typeof(string), typeof(Uri), typeof(color), typeof(string), typeof(Uri), typeof(IAssetProvider<AudioClip>) });
+
+        private static readonly Dictionary<ModConfigurationKey<Uri>, StaticAudioClip> audioClips;
+
+        [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<bool> EnableFocusedJoinSound = new ModConfigurationKey<bool>("EnableFocusedJoinSound", "Enable playing the sound clip set for users joining the focused session.", () => true);
+
+        [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<bool> EnableFocusedLeaveSound = new ModConfigurationKey<bool>("EnableFocusedLeaveSound", "Enable playing the sound clip set for users leaving the focused session.", () => true);
+
+        [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<bool> EnableUnfocusedJoinSound = new ModConfigurationKey<bool>("EnableUnfocusedJoinSound", "Enable playing the sound clip set for users joining an unfocused session.", () => true);
+
+        [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<bool> EnableUnfocusedLeaveSound = new ModConfigurationKey<bool>("EnableUnfocusedLeaveSound", "Enable playing the sound clip set for users leaving an unfocused session.", () => true);
 
         [AutoRegisterConfigKey]
         private static readonly ModConfigurationKey<bool> FocusWorldFromNotifications = new ModConfigurationKey<bool>("FocusWorldFromNotifications", "Makes clicking a User join/leave notification focus the world it relates to.", () => true);
 
         [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<Uri> JoinFocusedNotificationSoundUri = new ModConfigurationKey<Uri>("NotificationSound", "Notification sound for users joining the focused session. Disabled when null.", () => new Uri("neosdb:///9dc5b04079ade110bed56ae55af986f237d8f55d1973e41e19825b60156de996.wav"));
+
+        [AutoRegisterConfigKey]
         private static readonly ModConfigurationKey<color> JoinFocusedWorldColor = new ModConfigurationKey<color>("JoinFocusedWorldColor", "Color of the notification for a User joining the focused session.", () => BlendColor(color.Blue));
+
+        [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<Uri> JoinUnfocusedNotificationSoundUri = new ModConfigurationKey<Uri>("JoinUnfocusedNotificationSound", "Notification sound for users joining an unfocused session. Disabled when null.", () => new Uri("neosdb:///c0d5cfb879a42bd04f262071e20fd7033ec3172102ae7d14dcecee536cf3b64d.wav"));
 
         [AutoRegisterConfigKey]
         private static readonly ModConfigurationKey<color> JoinUnfocusedWorldColor = new ModConfigurationKey<color>("JoinUnfocusedWorldColor", "Color of the notification for a User joining an unfocused session.", () => BlendColor(BlendColor(color.Blue)));
 
         [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<Uri> LeaveFocusedNotificationSoundUri = new ModConfigurationKey<Uri>("NotificationLeaveSound", "Notification sound for users joining the focused session. Disabled when null.", () => new Uri("neosdb:///887ac33061fc43e029d994a05169bc0f869689b0e7af37813bb11e0f21e2ae14.wav"));
+
+        [AutoRegisterConfigKey]
         private static readonly ModConfigurationKey<color> LeaveFocusedWorldColor = new ModConfigurationKey<color>("LeaveFocusedWorldColor", "Color of the notification for a User leaving the focused session.", () => BlendColor(color.Red));
+
+        [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<Uri> LeaveUnfocusedNotificationSoundUri = new ModConfigurationKey<Uri>("LeaveUnfocusedNotificationSound", "Notification sound for users leaving an unfocused session. Disabled when null.", () => new Uri("neosdb:///1a56efe474f539f167b75a802e3afa302ba1fc4d20599273fce017e62fb40c4c.wav"));
 
         [AutoRegisterConfigKey]
         private static readonly ModConfigurationKey<color> LeaveUnfocusedWorldColor = new ModConfigurationKey<color>("LeaveUnfocusedWorldColor", "Color of the notification for a User leaving an unfocused session.", () => BlendColor(BlendColor(color.Red)));
@@ -35,30 +63,46 @@ namespace UserJoinLeaveNotifications
         [AutoRegisterConfigKey]
         private static readonly ModConfigurationKey<bool> ShowUnfocusedWorldEvents = new ModConfigurationKey<bool>("ShowUnfocusedWorldEvents", "Show notifications for Users joining/leaving unfocused sessions.", () => true);
 
+        private static Action<string, string, Uri, color, string, Uri, IAssetProvider<AudioClip>> addNotification;
         public override string Author => "Banane9";
         public override string Link => "https://github.com/Banane9/NeosUserJoinLeaveNotifications";
         public override string Name => "UserJoinLeaveNotifications";
-        public override string Version => "2.0.0";
+        public override string Version => "2.1.0";
+
+        static UserJoinLeaveNotifications()
+        {
+            audioClips = new Dictionary<ModConfigurationKey<Uri>, StaticAudioClip>()
+            {
+                { JoinFocusedNotificationSoundUri, null },
+                { JoinUnfocusedNotificationSoundUri, null },
+                { LeaveFocusedNotificationSoundUri, null },
+                { LeaveUnfocusedNotificationSoundUri , null }
+            };
+        }
 
         public static void Setup()
         {
             // Hook into the world focused event
-            Engine.Current.WorldManager.WorldAdded += world => world.WorldRunning += OnWorldAdded;
+            Engine.Current.WorldManager.WorldAdded += world => world.WorldRunning += OnNewWorldRunning;
         }
 
         public override void OnEngineInit()
         {
             Config = GetConfiguration();
             Config.Save(true);
+            Config.OnThisConfigurationChanged += Config_OnThisConfigurationChanged;
 
-            Engine.Current.RunPostInit(Setup);
+            Engine.Current.OnReady += Setup;
+
+            Harmony harmony = new Harmony($"{Author}.{Name}");
+            harmony.PatchAll();
         }
 
         private static void AddNotification(World world, string userId, string message, Uri thumbnail, color backgroundColor, string mainMessage = "N/A", Uri overrideProfile = null, IAssetProvider<AudioClip> clip = null)
         {
-            NotificationPanel.Current?.RunSynchronously(() =>
+            NotificationPanel.Current.RunSynchronously(() =>
             { // ;-;
-                addNotification.Invoke(NotificationPanel.Current, new object[] { userId, message, thumbnail, backgroundColor, mainMessage, overrideProfile, clip });
+                addNotification(userId, message, thumbnail, backgroundColor, mainMessage, overrideProfile, clip);
                 AddWorldFocus(NotificationPanel.Current, world);
             });
         }
@@ -99,6 +143,16 @@ namespace UserJoinLeaveNotifications
             return TryFromString(cloudUserProfile?.IconUrl) ?? NeosAssets.Graphics.Thumbnails.AnonymousHeadset;
         }
 
+        private static void OnNewWorldRunning(World world)
+        {
+            // Get the user bag of the new world
+            var userBag = GetUserbag(world);
+
+            // Add the event handler to the new world
+            userBag.OnElementAdded += OnUserJoined;
+            userBag.OnElementRemoved += OnUserLeft;
+        }
+
         private static void OnUserJoined(SyncBagBase<RefID, User> bag, RefID key, User user, bool isNew)
         {
             var focusedWorld = Engine.Current.WorldManager.FocusedWorld == bag.World;
@@ -108,8 +162,11 @@ namespace UserJoinLeaveNotifications
                 return;
 
             NotificationPanel.Current.RunInUpdates(3, async () =>
-            { // Running immediately results in the getuser to return a BadRequest
+            {
+                // Running immediately results in the getuser to return a BadRequest
                 var thumbnail = await GetUserThumbnail(user.UserID);
+                var audioClip = Config.GetValue(focusedWorld ? EnableFocusedJoinSound : EnableUnfocusedJoinSound) ?
+                    audioClips[focusedWorld ? JoinFocusedNotificationSoundUri : JoinUnfocusedNotificationSoundUri] : null;
 
                 AddNotification(bag.World,
                     user.UserID,
@@ -117,7 +174,8 @@ namespace UserJoinLeaveNotifications
                     TryFromString(bag.World.GetSessionInfo().Thumbnail),
                     Config.GetValue(focusedWorld ? JoinFocusedWorldColor : JoinUnfocusedWorldColor),
                     "User Joined",
-                    thumbnail);
+                    thumbnail,
+                    audioClip);
             });
         }
 
@@ -130,6 +188,8 @@ namespace UserJoinLeaveNotifications
                 return;
 
             var thumbnail = await GetUserThumbnail(user.UserID);
+            var audioClip = Config.GetValue(focusedWorld ? EnableFocusedLeaveSound : EnableUnfocusedLeaveSound) ?
+                audioClips[focusedWorld ? LeaveFocusedNotificationSoundUri : LeaveUnfocusedNotificationSoundUri] : null;
 
             AddNotification(bag.World,
                 user.UserID,
@@ -137,17 +197,33 @@ namespace UserJoinLeaveNotifications
                 TryFromString(bag.World.GetSessionInfo().Thumbnail),
                 Config.GetValue(focusedWorld ? LeaveFocusedWorldColor : LeaveUnfocusedWorldColor),
                 "User Left",
-                thumbnail);
+                thumbnail,
+                audioClip);
         }
 
-        private static void OnWorldAdded(World world)
+        private void Config_OnThisConfigurationChanged(ConfigurationChangedEvent configurationChangedEvent)
         {
-            // Store the user bag of the new world
-            var userBag = GetUserbag(world);
+            if (!(configurationChangedEvent.Key is ModConfigurationKey<Uri> key) || !audioClips.TryGetValue(key, out var audioClip))
+                return;
 
-            // Add the event handler to the new world
-            userBag.OnElementAdded += OnUserJoined;
-            userBag.OnElementRemoved += OnUserLeft;
+            if (audioClip == null)
+                audioClips[key] = NotificationPanel.Current.Slot.AttachAudioClip(Config.GetValue(key));
+            else
+                audioClip.URL.Value = Config.GetValue(key);
+        }
+
+        [HarmonyPatch(typeof(NotificationPanel))]
+        private static class NotificationPanelPatches
+        {
+            [HarmonyPostfix]
+            [HarmonyPatch("OnAttach")]
+            private static void OnAttachPostfix(NotificationPanel __instance)
+            {
+                foreach (var audioClipUri in audioClips.Keys.ToArray())
+                    audioClips[audioClipUri] = NotificationPanel.Current.Slot.AttachAudioClip(Config.GetValue(audioClipUri));
+
+                addNotification = AccessTools.MethodDelegate<Action<string, string, Uri, color, string, Uri, IAssetProvider<AudioClip>>>(addNotificationMethod, NotificationPanel.Current);
+            }
         }
     }
 }
