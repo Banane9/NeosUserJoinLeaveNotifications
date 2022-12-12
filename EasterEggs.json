@@ -1,0 +1,6 @@
+{
+    "U-Napo": {
+        "join": "neosdb:///94fbf617f4529df988682cb11152d43d63e204ac9ca9d0caf1f8fb77d81e9bae",
+        "leave": "neosdb:///d7b2393d7102bc8d3e92a2a85c1d62b2b2789409e5dcf7b43873f8c9b5f2d476"
+    }
+}
