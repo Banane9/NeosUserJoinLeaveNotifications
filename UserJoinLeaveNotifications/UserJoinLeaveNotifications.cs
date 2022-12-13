@@ -10,6 +10,9 @@ using FrooxEngine.UIX;
 using static CloudX.Shared.CloudXInterface;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
+using Newtonsoft.Json;
+using System.IO;
 
 namespace UserJoinLeaveNotifications
 {
@@ -19,7 +22,8 @@ namespace UserJoinLeaveNotifications
 
         private static readonly MethodInfo addNotificationMethod = AccessTools.Method(typeof(NotificationPanel), "AddNotification", new Type[] { typeof(string), typeof(string), typeof(Uri), typeof(color), typeof(string), typeof(Uri), typeof(IAssetProvider<AudioClip>) });
 
-        private static readonly Dictionary<ModConfigurationKey<Uri>, StaticAudioClip> audioClips;
+        [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<Uri> EasterEggList = new ModConfigurationKey<Uri>("EasterEggList", "URI to load the list of override sounds from.", () => new Uri("https://raw.githubusercontent.com/Banane9/NeosUserJoinLeaveNotifications/master/EasterEggs.json"), true);
 
         [AutoRegisterConfigKey]
         private static readonly ModConfigurationKey<bool> EnableFocusedJoinSound = new ModConfigurationKey<bool>("EnableFocusedJoinSound", "Enable playing the sound clip set for users joining the focused session.", () => true);
@@ -63,22 +67,15 @@ namespace UserJoinLeaveNotifications
         [AutoRegisterConfigKey]
         private static readonly ModConfigurationKey<bool> ShowUnfocusedWorldEvents = new ModConfigurationKey<bool>("ShowUnfocusedWorldEvents", "Show notifications for Users joining/leaving unfocused sessions.", () => true);
 
+        [AutoRegisterConfigKey]
+        private static readonly ModConfigurationKey<bool> UseEasterEggSounds = new ModConfigurationKey<bool>("UseEasterEggSounds", "Use override sounds for some users.", () => true);
+
         private static Action<string, string, Uri, color, string, Uri, IAssetProvider<AudioClip>> addNotification;
+        private static Dictionary<string, SoundOverride> soundOverrides = new Dictionary<string, SoundOverride>();
         public override string Author => "Banane9";
         public override string Link => "https://github.com/Banane9/NeosUserJoinLeaveNotifications";
         public override string Name => "UserJoinLeaveNotifications";
-        public override string Version => "2.1.0";
-
-        static UserJoinLeaveNotifications()
-        {
-            audioClips = new Dictionary<ModConfigurationKey<Uri>, StaticAudioClip>()
-            {
-                { JoinFocusedNotificationSoundUri, null },
-                { JoinUnfocusedNotificationSoundUri, null },
-                { LeaveFocusedNotificationSoundUri, null },
-                { LeaveUnfocusedNotificationSoundUri , null }
-            };
-        }
+        public override string Version => "2.2.0";
 
         public static void Setup()
         {
@@ -90,12 +87,13 @@ namespace UserJoinLeaveNotifications
         {
             Config = GetConfiguration();
             Config.Save(true);
-            Config.OnThisConfigurationChanged += Config_OnThisConfigurationChanged;
 
             Engine.Current.OnReady += Setup;
 
             Harmony harmony = new Harmony($"{Author}.{Name}");
             harmony.PatchAll();
+
+            loadEasterEggSounds();
         }
 
         private static void AddNotification(World world, string userId, string message, Uri thumbnail, color backgroundColor, string mainMessage = "N/A", Uri overrideProfile = null, IAssetProvider<AudioClip> clip = null)
@@ -143,6 +141,18 @@ namespace UserJoinLeaveNotifications
             return TryFromString(cloudUserProfile?.IconUrl) ?? NeosAssets.Graphics.Thumbnails.AnonymousHeadset;
         }
 
+        private static async void loadEasterEggSounds()
+        {
+            using (var httpClient = new HttpClient())
+            {
+                var response = await httpClient.GetStreamAsync(Config.GetValue(EasterEggList));
+                soundOverrides = JsonSerializer.CreateDefault()
+                    .Deserialize<Dictionary<string, SoundOverride>>(new JsonTextReader(new StreamReader(response)));
+
+                Warn($"Loaded Sound Overrides for: {string.Join(", ", soundOverrides.Keys)}");
+            }
+        }
+
         private static void OnNewWorldRunning(World world)
         {
             // Get the user bag of the new world
@@ -165,8 +175,13 @@ namespace UserJoinLeaveNotifications
             {
                 // Running immediately results in the getuser to return a BadRequest
                 var thumbnail = await GetUserThumbnail(user.UserID);
-                var audioClip = Config.GetValue(focusedWorld ? EnableFocusedJoinSound : EnableUnfocusedJoinSound) ?
-                    audioClips[focusedWorld ? JoinFocusedNotificationSoundUri : JoinUnfocusedNotificationSoundUri] : null;
+                var audioClipUri = Config.GetValue(focusedWorld ? EnableFocusedJoinSound : EnableUnfocusedJoinSound) ?
+                                    (Config.GetValue(UseEasterEggSounds) && soundOverrides.TryGetValue(user.UserID, out var soundOverride) ?
+                                        (focusedWorld ? soundOverride.JoinFocused : soundOverride.JoinUnfocused)
+                                        : Config.GetValue(focusedWorld ? JoinFocusedNotificationSoundUri : JoinUnfocusedNotificationSoundUri))
+                                    : null;
+
+                var audioClip = audioClipUri != null ? NotificationPanel.Current.Slot.AttachAudioClip(audioClipUri) : null;
 
                 AddNotification(bag.World,
                     user.UserID,
@@ -188,8 +203,13 @@ namespace UserJoinLeaveNotifications
                 return;
 
             var thumbnail = await GetUserThumbnail(user.UserID);
-            var audioClip = Config.GetValue(focusedWorld ? EnableFocusedLeaveSound : EnableUnfocusedLeaveSound) ?
-                audioClips[focusedWorld ? LeaveFocusedNotificationSoundUri : LeaveUnfocusedNotificationSoundUri] : null;
+            var audioClipUri = Config.GetValue(focusedWorld ? EnableFocusedLeaveSound : EnableUnfocusedLeaveSound) ?
+                                (Config.GetValue(UseEasterEggSounds) && soundOverrides.TryGetValue(user.UserID, out var soundOverride) ?
+                                    (focusedWorld ? soundOverride.LeaveFocused : soundOverride.LeaveUnfocused)
+                                    : Config.GetValue(focusedWorld ? LeaveFocusedNotificationSoundUri : LeaveUnfocusedNotificationSoundUri))
+                                : null;
+
+            var audioClip = audioClipUri != null ? NotificationPanel.Current.Slot.AttachAudioClip(audioClipUri) : null;
 
             AddNotification(bag.World,
                 user.UserID,
@@ -201,17 +221,6 @@ namespace UserJoinLeaveNotifications
                 audioClip);
         }
 
-        private void Config_OnThisConfigurationChanged(ConfigurationChangedEvent configurationChangedEvent)
-        {
-            if (!(configurationChangedEvent.Key is ModConfigurationKey<Uri> key) || !audioClips.TryGetValue(key, out var audioClip))
-                return;
-
-            if (audioClip == null)
-                audioClips[key] = NotificationPanel.Current.Slot.AttachAudioClip(Config.GetValue(key));
-            else
-                audioClip.URL.Value = Config.GetValue(key);
-        }
-
         [HarmonyPatch(typeof(NotificationPanel))]
         private static class NotificationPanelPatches
         {
@@ -219,9 +228,6 @@ namespace UserJoinLeaveNotifications
             [HarmonyPatch("OnAttach")]
             private static void OnAttachPostfix(NotificationPanel __instance)
             {
-                foreach (var audioClipUri in audioClips.Keys.ToArray())
-                    audioClips[audioClipUri] = NotificationPanel.Current.Slot.AttachAudioClip(Config.GetValue(audioClipUri));
-
                 addNotification = AccessTools.MethodDelegate<Action<string, string, Uri, color, string, Uri, IAssetProvider<AudioClip>>>(addNotificationMethod, NotificationPanel.Current);
             }
         }
